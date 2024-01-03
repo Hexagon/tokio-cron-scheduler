@@ -2,7 +2,7 @@ use crate::job::job_data_prost::ListOfUuids;
 use crate::nats::{sanitize_nats_key, NatsStore};
 use crate::store::{DataStore, InitStore, MetaDataStorage};
 use crate::{JobAndNextTick, JobSchedulerError, JobStoredData, JobUuid};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use nats::kv::Store;
 use prost::Message;
 use std::future::Future;
@@ -149,8 +149,8 @@ impl MetaDataStorage for NatsMetadataStore {
     fn set_next_and_last_tick(
         &mut self,
         guid: Uuid,
-        next_tick: Option<DateTime<Utc>>,
-        last_tick: Option<DateTime<Utc>>,
+        next_tick: Option<DateTime<Local>>,
+        last_tick: Option<DateTime<Local>>,
     ) -> Pin<Box<dyn Future<Output = Result<(), JobSchedulerError>> + Send>> {
         let get = self.get(guid);
         let bucket = self.store.bucket.clone();
@@ -198,7 +198,7 @@ impl MetaDataStorage for NatsMetadataStore {
             }
             let list = list.unwrap();
             let bucket = bucket.read().await;
-            let now = Utc::now();
+            let now = Local::now();
             let now = now.timestamp() as u64;
             let ret = list
                 .uuids

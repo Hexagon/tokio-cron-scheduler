@@ -4,11 +4,10 @@ use crate::job::job_data::{JobState, JobType};
 use crate::job::job_data_prost::{JobState, JobType};
 use crate::job_scheduler::JobsSchedulerLocked;
 use crate::{JobScheduler, JobSchedulerError, JobStoredData};
-use chrono::{DateTime, Utc};
-use cron::Schedule;
+use chrono::{DateTime, Local};
+use croner::Cron;
 use cron_job::CronJob;
 use non_cron_job::NonCronJob;
-use std::convert::TryInto;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -58,12 +57,12 @@ pub struct JobLocked(pub(crate) Arc<RwLock<Box<dyn Job + Send + Sync>>>);
 
 pub trait Job {
     fn is_cron_job(&self) -> bool;
-    fn schedule(&self) -> Option<Schedule>;
+    fn schedule(&self) -> Option<Cron>;
     fn repeated_every(&self) -> Option<u64>;
-    fn last_tick(&self) -> Option<DateTime<Utc>>;
-    fn set_last_tick(&mut self, tick: Option<DateTime<Utc>>);
-    fn next_tick(&self) -> Option<DateTime<Utc>>;
-    fn set_next_tick(&mut self, tick: Option<DateTime<Utc>>);
+    fn last_tick(&self) -> Option<DateTime<Local>>;
+    fn set_last_tick(&mut self, tick: Option<DateTime<Local>>);
+    fn next_tick(&self) -> Option<DateTime<Local>>;
+    fn set_next_tick(&mut self, tick: Option<DateTime<Local>>);
     fn set_count(&mut self, count: u32);
     fn count(&self) -> u32;
     fn increment_count(&mut self);
@@ -87,20 +86,22 @@ impl JobLocked {
     /// // Run at second 0 of the 15th minute of the 6th, 8th, and 10th hour
     /// // of any day in March and June that is a Friday of the year 2017.
     /// let job = Job::new("0 15 6,8,10 * Mar,Jun Fri 2017", |_uuid, _lock| {
-    ///             println!("{:?} Hi I ran", chrono::Utc::now());
+    ///             println!("{:?} Hi I ran", chrono::Local::now());
     ///         });
     /// sched.add(job)
     /// tokio::spawn(sched.start());
     /// ```
-    pub fn new<S, T, E>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
+    pub fn new<S, T>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
     where
         T: 'static,
         T: FnMut(Uuid, JobsSchedulerLocked) + Send + Sync,
-        S: TryInto<Schedule, Error = E>,
-        E: std::error::Error + 'static,
+        S: AsRef<str>,
     {
-        let schedule: Schedule = schedule
-            .try_into()
+        let schedule_str = schedule.as_ref();
+        let schedule: Cron = Cron::new(schedule_str)
+            .with_seconds_required()
+            .with_alternative_weekdays()
+            .parse()
             .map_err(|_| JobSchedulerError::ParseSchedule)?;
         let job_id = Uuid::new_v4();
         Ok(Self(Arc::new(RwLock::new(Box::new(CronJob {
@@ -109,7 +110,7 @@ impl JobLocked {
                 last_updated: None,
                 last_tick: None,
                 next_tick: schedule
-                    .upcoming(Utc)
+                    .iter_after(Local::now())
                     .next()
                     .map(|t| t.timestamp() as u64)
                     .unwrap_or(0),
@@ -126,7 +127,7 @@ impl JobLocked {
                 )),
                 #[cfg(not(feature = "has_bytes"))]
                 job: Some(job_data::job_stored_data::Job::CronJob(job_data::CronJob {
-                    schedule: schedule.to_string(),
+                    schedule: schedule.pattern.to_string(),
                 })),
             },
             run: Box::new(run),
@@ -142,22 +143,23 @@ impl JobLocked {
     /// // Run at second 0 of the 15th minute of the 6th, 8th, and 10th hour
     /// // of any day in March and June that is a Friday of the year 2017.
     /// let job = Job::new("0 15 6,8,10 * Mar,Jun Fri 2017", |_uuid, _lock| Box::pin( async move {
-    ///             println!("{:?} Hi I ran", chrono::Utc::now());
+    ///             println!("{:?} Hi I ran", chrono::Local::now());
     ///         }));
     /// sched.add(job)
     /// tokio::spawn(sched.start());
     /// ```
-    pub fn new_async<S, T, E>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
+    pub fn new_async<S, T>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
     where
         T: 'static,
         T: FnMut(Uuid, JobsSchedulerLocked) -> Pin<Box<dyn Future<Output = ()> + Send>>
             + Send
             + Sync,
-        S: TryInto<Schedule, Error = E>,
-        E: std::error::Error + 'static,
+        S: AsRef<str>
     {
-        let schedule: Schedule = schedule
-            .try_into()
+        let schedule: Cron = Cron::new(schedule.as_ref())
+            .with_seconds_required()
+            .with_alternative_weekdays()
+            .parse()
             .map_err(|_| JobSchedulerError::ParseSchedule)?;
         let job_id = Uuid::new_v4();
         Ok(Self(Arc::new(RwLock::new(Box::new(CronJob {
@@ -166,7 +168,7 @@ impl JobLocked {
                 last_updated: None,
                 last_tick: None,
                 next_tick: schedule
-                    .upcoming(Utc)
+                    .iter_after(Local::now())
                     .next()
                     .map(|t| t.timestamp() as u64)
                     .unwrap_or(0),
@@ -183,7 +185,7 @@ impl JobLocked {
                 )),
                 #[cfg(not(feature = "has_bytes"))]
                 job: Some(job_data::job_stored_data::Job::CronJob(job_data::CronJob {
-                    schedule: schedule.to_string(),
+                    schedule: schedule.pattern.to_string(),
                 })),
             },
             run: Box::new(nop),
@@ -199,17 +201,16 @@ impl JobLocked {
     /// // Run at second 0 of the 15th minute of the 6th, 8th, and 10th hour
     /// // of any day in March and June that is a Friday of the year 2017.
     /// let job = Job::new_cron_job("0 15 6,8,10 * Mar,Jun Fri 2017", |_uuid, _lock| {
-    ///             println!("{:?} Hi I ran", chrono::Utc::now());
+    ///             println!("{:?} Hi I ran", chrono::Local::now());
     ///         });
     /// sched.add(job)
     /// tokio::spawn(sched.start());
     /// ```
-    pub fn new_cron_job<S, T, E>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
+    pub fn new_cron_job<S, T>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
     where
         T: 'static,
         T: FnMut(Uuid, JobsSchedulerLocked) + Send + Sync,
-        S: TryInto<Schedule, Error = E>,
-        E: std::error::Error + 'static,
+        S: AsRef<str>,
     {
         JobLocked::new(schedule, run)
     }
@@ -221,19 +222,18 @@ impl JobLocked {
     /// // Run at second 0 of the 15th minute of the 6th, 8th, and 10th hour
     /// // of any day in March and June that is a Friday of the year 2017.
     /// let job = Job::new("0 15 6,8,10 * Mar,Jun Fri 2017", |_uuid, _lock| Box::pin( async move {
-    ///             println!("{:?} Hi I ran", chrono::Utc::now());
+    ///             println!("{:?} Hi I ran", chrono::Local::now());
     ///         }));
     /// sched.add(job)
     /// tokio::spawn(sched.start());
     /// ```
-    pub fn new_cron_job_async<S, T, E>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
+    pub fn new_cron_job_async<S, T>(schedule: S, run: T) -> Result<Self, JobSchedulerError>
     where
         T: 'static,
         T: FnMut(Uuid, JobsSchedulerLocked) -> Pin<Box<dyn Future<Output = ()> + Send>>
             + Send
             + Sync,
-        S: TryInto<Schedule, Error = E>,
-        E: std::error::Error + 'static,
+        S: AsRef<str>
     {
         JobLocked::new_async(schedule, run)
     }
@@ -292,7 +292,7 @@ impl JobLocked {
     /// ```rust,ignore
     /// let mut sched = JobScheduler::new();
     /// let job = Job::new_one_shot(Duration::from_secs(18), |_uuid, _l| {
-    ///            println!("{:?} I'm only run once", chrono::Utc::now());
+    ///            println!("{:?} I'm only run once", chrono::Local::now());
     ///        }
     /// sched.add(job)
     /// tokio::spawn(sched.start());
@@ -311,7 +311,7 @@ impl JobLocked {
     /// ```rust,ignore
     /// let mut sched = JobScheduler::new();
     /// let job = Job::new_one_shot(Duration::from_secs(18), |_uuid, _l| Box::pin(async move {
-    ///            println!("{:?} I'm only run once", chrono::Utc::now());
+    ///            println!("{:?} I'm only run once", chrono::Local::now());
     ///        }));
     /// sched.add(job)
     /// tokio::spawn(sched.start());
@@ -342,7 +342,7 @@ impl JobLocked {
                 id: Some(id.into()),
                 last_updated: None,
                 last_tick: None,
-                next_tick: chrono::Utc::now()
+                next_tick: chrono::Local::now()
                     .checked_add_signed(chrono::Duration::seconds(
                         instant.duration_since(Instant::now()).as_secs() as i64,
                     ))
@@ -440,7 +440,7 @@ impl JobLocked {
                 id: Some(id.into()),
                 last_updated: None,
                 last_tick: None,
-                next_tick: chrono::Utc::now()
+                next_tick: chrono::Local::now()
                     .checked_add_signed(chrono::Duration::seconds(duration.as_secs() as i64))
                     .map(|t| t.timestamp() as u64)
                     .unwrap_or(0),
@@ -479,7 +479,7 @@ impl JobLocked {
     /// ```rust,ignore
     /// let mut sched = JobScheduler::new();
     /// let job = Job::new_repeated(Duration::from_secs(8), |_uuid, _lock| {
-    ///     println!("{:?} I'm repeated every 8 seconds", chrono::Utc::now());
+    ///     println!("{:?} I'm repeated every 8 seconds", chrono::Local::now());
     /// }
     /// sched.add(job)
     /// tokio::spawn(sched.start());
@@ -498,7 +498,7 @@ impl JobLocked {
     /// ```rust,ignore
     /// let mut sched = JobScheduler::new();
     /// let job = Job::new_repeated(Duration::from_secs(8), |_uuid, _lock| Box::pin(async move {
-    ///     println!("{:?} I'm repeated every 8 seconds", chrono::Utc::now());
+    ///     println!("{:?} I'm repeated every 8 seconds", chrono::Local::now());
     /// }));
     /// sched.add(job)
     /// tokio::spawn(sched.start());
@@ -517,7 +517,7 @@ impl JobLocked {
     /// The `tick` method returns a true if there was an invocation needed after it was last called
     /// This method will also change the last tick on itself
     pub fn tick(&mut self) -> Result<bool, JobSchedulerError> {
-        let now = Utc::now();
+        let now = Local::now();
         let (job_type, last_tick, next_tick, schedule, repeated_every, ran, count) = {
             let r = self.0.read().map_err(|_| JobSchedulerError::TickError)?;
             (
@@ -561,7 +561,7 @@ impl JobLocked {
 
         let next_tick = if must_run {
             match job_type {
-                JobType::Cron => schedule.and_then(|s| s.after(&now).next()),
+                JobType::Cron => schedule.and_then(|s| s.iter_after(now).next()),
                 JobType::OneShot => None,
                 JobType::Repeated => repeated_every.and_then(|r| {
                     next_tick

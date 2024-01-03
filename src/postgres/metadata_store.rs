@@ -2,7 +2,7 @@ use crate::job::job_data_prost::{CronJob, JobType, NonCronJob};
 use crate::postgres::PostgresStore;
 use crate::store::{DataStore, InitStore, MetaDataStorage};
 use crate::{JobAndNextTick, JobSchedulerError, JobStoredData, JobUuid};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -325,7 +325,7 @@ impl MetaDataStorage for PostgresMetadataStore {
                 PostgresStore::Created(_) => Err(JobSchedulerError::CantListNextTicks),
                 PostgresStore::Inited(store) => {
                     let store = store.read().await;
-                    let now = Utc::now().timestamp();
+                    let now = Local::now().timestamp();
                     let sql = "SELECT \
                             id, job_type, next_tick, last_tick \
                         FROM "
@@ -371,8 +371,8 @@ impl MetaDataStorage for PostgresMetadataStore {
     fn set_next_and_last_tick(
         &mut self,
         guid: Uuid,
-        next_tick: Option<DateTime<Utc>>,
-        last_tick: Option<DateTime<Utc>>,
+        next_tick: Option<DateTime<Local>>,
+        last_tick: Option<DateTime<Local>>,
     ) -> Pin<Box<dyn Future<Output = Result<(), JobSchedulerError>> + Send>> {
         let store = self.store.clone();
         let table = self.table.clone();
@@ -415,7 +415,7 @@ impl MetaDataStorage for PostgresMetadataStore {
                 PostgresStore::Created(_) => Err(JobSchedulerError::CouldNotGetTimeUntilNextTick),
                 PostgresStore::Inited(store) => {
                     let store = store.read().await;
-                    let now = Utc::now().timestamp();
+                    let now = Local::now().timestamp();
                     let sql = "SELECT \
                             next_tick \
                         FROM "

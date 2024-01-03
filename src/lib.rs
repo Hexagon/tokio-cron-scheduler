@@ -16,16 +16,12 @@ mod scheduler;
 mod simple;
 mod store;
 
-use std::ops::Add;
-use std::str::FromStr;
-use std::time::{Duration, SystemTime};
-
 #[cfg(not(feature = "has_bytes"))]
 use crate::job::job_data::ListOfUuids;
 #[cfg(feature = "has_bytes")]
 use crate::job::job_data_prost::ListOfUuids;
-use chrono::{DateTime, Utc};
-use cron::Schedule;
+use chrono::{DateTime, TimeZone, Local, NaiveDateTime};
+use croner::Cron;
 #[cfg(not(feature = "has_bytes"))]
 use job::job_data::{JobAndNextTick, JobStoredData, Uuid as JobUuid};
 #[cfg(feature = "has_bytes")]
@@ -92,26 +88,27 @@ impl From<&JobUuid> for Uuid {
 }
 
 impl JobAndNextTick {
-    pub fn utc(lt: u64) -> DateTime<Utc> {
-        let dt = SystemTime::UNIX_EPOCH.add(Duration::from_secs(lt));
-        let dt: DateTime<Utc> = DateTime::from(dt);
-        dt
+    pub fn local(lt: u64) -> DateTime<Local> {
+        let naive_datetime = NaiveDateTime::from_timestamp_opt(lt as i64, 0)
+        .expect("Timestamp is out of range");
+        Local.from_utc_datetime(&naive_datetime)
+
     }
 
-    fn next_tick_utc(&self) -> Option<DateTime<Utc>> {
+    fn next_tick_local(&self) -> Option<DateTime<Local>> {
         match self.next_tick {
             0 => None,
-            val => Some(JobAndNextTick::utc(val)),
+            val => Some(JobAndNextTick::local(val)),
         }
     }
 
-    fn last_tick_utc(&self) -> Option<DateTime<Utc>> {
-        self.last_tick.map(JobAndNextTick::utc)
+    fn last_tick_local(&self) -> Option<DateTime<Local>> {
+        self.last_tick.map(JobAndNextTick::local)
     }
 }
 
 impl JobStoredData {
-    pub fn schedule(&self) -> Option<Schedule> {
+    pub fn schedule(&self) -> Option<Cron> {
         self.job
             .as_ref()
             .and_then(|j| match j {
@@ -121,18 +118,18 @@ impl JobStoredData {
                 job::job_data::job_stored_data::Job::CronJob(cj) => Some(&*cj.schedule),
                 _ => None,
             })
-            .and_then(|s| Schedule::from_str(s).ok())
+            .and_then(|s| Cron::new(s).with_seconds_required().with_alternative_weekdays().parse().ok())
     }
 
-    pub fn next_tick_utc(&self) -> Option<DateTime<Utc>> {
+    pub fn next_tick_local(&self) -> Option<DateTime<Local>> {
         match self.next_tick {
             0 => None,
-            val => Some(JobAndNextTick::utc(val)),
+            val => Some(JobAndNextTick::local(val)),
         }
     }
 
-    pub fn last_tick_utc(&self) -> Option<DateTime<Utc>> {
-        self.last_tick.map(JobAndNextTick::utc)
+    pub fn last_tick_local(&self) -> Option<DateTime<Local>> {
+        self.last_tick.map(JobAndNextTick::local)
     }
 
     pub fn repeated_every(&self) -> Option<u64> {
@@ -148,14 +145,14 @@ impl JobStoredData {
         })
     }
 
-    pub fn set_next_tick(&mut self, tick: Option<DateTime<Utc>>) {
+    pub fn set_next_tick(&mut self, tick: Option<DateTime<Local>>) {
         self.next_tick = match tick {
             Some(t) => t.timestamp() as u64,
             None => 0,
         }
     }
 
-    pub fn set_last_tick(&mut self, tick: Option<DateTime<Utc>>) {
+    pub fn set_last_tick(&mut self, tick: Option<DateTime<Local>>) {
         self.last_tick = tick.map(|t| t.timestamp() as u64);
     }
 }

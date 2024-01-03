@@ -21,7 +21,7 @@ tokio-cron-scheduler = "*"
 ```
 
 Creating a schedule for a job is done using the `FromStr` impl for the
-`Schedule` type of the [cron](https://github.com/zslayton/cron) library.
+`Cron` type of the [croner](https://github.com/hexagon/croner) library.
 
 The scheduling format is as follows:
 
@@ -30,7 +30,7 @@ sec   min   hour   day of month   month   day of week   year
 *     *     *      *              *       *             *
 ```
 
-Time is specified for `UTC` and not your local timezone. Note that the year may
+Time is specified for your local system timezone. Note that the year may
 be omitted.
 
 Comma separated values such as `5,8,10` represent more than one time value. So
